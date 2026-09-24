@@ -77,6 +77,23 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         let image = $('meta[property="og:image"]').attr('content');
         if (!image) image = $('.poster img, .single-poster img, article img, .entry-content img').first().attr('src') || '';
 
+        // IMDb Rating extraction
+        let imdb_rating = $('.num, .rating, .imdb_rating, .score, .imdb, span[itemprop="ratingValue"]').first().text().trim();
+        if (!imdb_rating) {
+            const pageText = $.text();
+            const match = pageText.match(/IMDb\s*:?\s*([\d\.]+(\/10)?)/i);
+            if (match) imdb_rating = match[1];
+        }
+        if (!imdb_rating) imdb_rating = "N/A";
+
+        // Quality extraction
+        let quality = $('.quality, .mvoie-quality, .badge-quality, .quality-tag, .dt_quality').first().text().trim();
+        if (!quality) {
+            const match = title.match(/(1080p|720p|480p|2160p|4K|WEB-DL|HDTV|BluRay|HD)/i);
+            if (match) quality = match[0];
+        }
+        if (!quality) quality = "HD / WEB-DL";
+
         let story = '';
         $('.entry-content p, .description p, article p').each((i, el) => {
             const text = $(el).text().trim();
@@ -91,16 +108,28 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             const href = $(el).attr('href') || '';
             let text = $(el).text().trim();
             if (href && (href.includes('/links/') || href.includes('pixeldrain.com') || href.includes('mega.nz') || href.includes('drive.google.com') || href.includes('download') || href.includes('/dl/')) && !href.includes('sinhalasub.lk/?s=') && !href.includes('facebook.com')) {
-                let quality = text || "Download Link";
-                quality = quality.replace(/\n|\t/g, ' ').trim();
-                if (quality.length > 60) quality = "Download Link";
+                let dlQuality = text || "Download Link";
+                dlQuality = dlQuality.replace(/\n|\t/g, ' ').trim();
+                if (dlQuality.length > 60) dlQuality = "Download Link";
                 if (!downloads.some(d => d.link === href)) {
-                    downloads.push({ quality, link: href });
+                    downloads.push({ quality: dlQuality, link: href });
                 }
             }
         });
 
-        res.json({ status: true, creator: "IMALSHA API", site: "sinhalasub", data: { title, image, story, downloads } });
+        res.json({
+            status: true,
+            creator: "IMALSHA API",
+            site: "sinhalasub",
+            data: {
+                title,
+                imdb_rating,
+                quality,
+                image,
+                story,
+                downloads
+            }
+        });
     } catch (err) {
         res.status(500).json({ status: false, error: err.message });
     }
