@@ -38,8 +38,15 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
         $('a').each((i, el) => {
             const href = $(el).attr('href') || '';
             const parent = $(el).closest('article, .result-item, .item, div');
-            let title = $(el).find('h2, h3, .title').text().trim() || $(el).attr('title') \vert{}\vert{}$(el).text().trim();
-            let img = $(el).find('img').attr('src') \vert{}\vert{}$(el).find('img').attr('data-src') || parent.find('img').attr('src') || parent.find('img').attr('data-src') || '';
+            
+            let title = $(el).find('h2, h3, .title').text().trim();
+            if (!title) title = $(el).attr('title') || '';
+            if (!title) title = $(el).text().trim();
+
+            let img = $(el).find('img').attr('src');
+            if (!img) img = $(el).find('img').attr('data-src');
+            if (!img) img = parent.find('img').attr('src');
+            if (!img) img = parent.find('img').attr('data-src') || '';
 
             if (href.includes('sinhalasub.lk') && (href.includes('/movies/') || href.includes('/tvshows/')) && title.length > 2) {
                 title = title.replace(/\t|\n/g, '').trim();
@@ -64,8 +71,11 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         const response = await axios.get(movieUrl, { headers: HEADERS, timeout: 10000 });
         const $ = cheerio.load(response.data);
 
-        const title = $('h1').first().text().trim() \vert{}\vert{}$('title').text().trim();
-        const image = $('meta[property="og:image"]').attr('content') \vert{}\vert{} $('.poster img, .single-poster img, article img, .entry-content img').first().attr('src') || '';
+        let title = $('h1').first().text().trim();
+        if (!title) title = $('title').text().trim();
+
+        let image = $('meta[property="og:image"]').attr('content');
+        if (!image) image = $('.poster img, .single-poster img, article img, .entry-content img').first().attr('src') || '';
 
         let story = '';
         $('.entry-content p, .description p, article p').each((i, el) => {
