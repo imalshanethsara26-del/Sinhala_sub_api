@@ -86,13 +86,13 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         }
         if (!imdb_rating) imdb_rating = "N/A";
 
-        // Quality extraction
-        let quality = $('.quality, .mvoie-quality, .badge-quality, .quality-tag, .dt_quality').first().text().trim();
-        if (!quality) {
+        // Main Quality extraction
+        let mainQuality = $('.quality, .mvoie-quality, .badge-quality, .quality-tag, .dt_quality').first().text().trim();
+        if (!mainQuality) {
             const match = title.match(/(1080p|720p|480p|2160p|4K|WEB-DL|HDTV|BluRay|HD)/i);
-            if (match) quality = match[0];
+            if (match) mainQuality = match[0];
         }
-        if (!quality) quality = "HD / WEB-DL";
+        if (!mainQuality) mainQuality = "HD / WEB-DL";
 
         let story = '';
         $('.entry-content p, .description p, article p').each((i, el) => {
@@ -107,12 +107,26 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         $('a').each((i, el) => {
             const href = $(el).attr('href') || '';
             let text = $(el).text().trim();
+
             if (href && (href.includes('/links/') || href.includes('pixeldrain.com') || href.includes('mega.nz') || href.includes('drive.google.com') || href.includes('download') || href.includes('/dl/')) && !href.includes('sinhalasub.lk/?s=') && !href.includes('facebook.com')) {
-                let dlQuality = text || "Download Link";
-                dlQuality = dlQuality.replace(/\n|\t/g, ' ').trim();
-                if (dlQuality.length > 60) dlQuality = "Download Link";
+                
+                let serverName = text || "Download Link";
+                serverName = serverName.replace(/\n|\t/g, ' ').trim();
+                if (serverName.length > 50) serverName = "Download Link";
+
+                // Parent HTML කොටසින් 1080p, 720p, 480p වගේ Quality Tag එකක් තියේදැයි සෙවීම
+                const parentText = $(el).closest('tr, .dl-box, .box, div, li, td').text();
+                const resMatch = parentText.match(/(1080p|720p|480p|2160p|4k|360p|HD|FHD|SD|WEB-DL|BluRay)/i);
+
+                let finalQualityLabel = serverName;
+
+                // Parent text එකෙන් Quality එකක් හමු වී, එය Button නමේ නැත්නම් එකතු කිරීම
+                if (resMatch && !serverName.toLowerCase().includes(resMatch[0].toLowerCase())) {
+                    finalQualityLabel = `${serverName} (${resMatch[0].toUpperCase()})`;
+                }
+
                 if (!downloads.some(d => d.link === href)) {
-                    downloads.push({ quality: dlQuality, link: href });
+                    downloads.push({ quality: finalQualityLabel, link: href });
                 }
             }
         });
@@ -124,7 +138,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             data: {
                 title,
                 imdb_rating,
-                quality,
+                quality: mainQuality,
                 image,
                 story,
                 downloads
