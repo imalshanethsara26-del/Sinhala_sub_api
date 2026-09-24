@@ -77,7 +77,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         let image = $('meta[property="og:image"]').attr('content');
         if (!image) image = $('.poster img, .single-poster img, article img, .entry-content img').first().attr('src') || '';
 
-        // IMDb Rating extraction
+        // IMDb Rating
         let imdb_rating = $('.num, .rating, .imdb_rating, .score, .imdb, span[itemprop="ratingValue"]').first().text().trim();
         if (!imdb_rating) {
             const pageText = $.text();
@@ -86,7 +86,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         }
         if (!imdb_rating) imdb_rating = "N/A";
 
-        // Main Quality extraction
+        // Main Quality
         let mainQuality = $('.quality, .mvoie-quality, .badge-quality, .quality-tag, .dt_quality').first().text().trim();
         if (!mainQuality) {
             const match = title.match(/(1080p|720p|480p|2160p|4K|WEB-DL|HDTV|BluRay|HD)/i);
@@ -104,32 +104,69 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         if (!story) story = 'No description available';
 
         const downloads = [];
-        $('a').each((i, el) => {
-            const href = $(el).attr('href') || '';
-            let text = $(el).text().trim();
 
-            if (href && (href.includes('/links/') || href.includes('pixeldrain.com') || href.includes('mega.nz') || href.includes('drive.google.com') || href.includes('download') || href.includes('/dl/')) && !href.includes('sinhalasub.lk/?s=') && !href.includes('facebook.com')) {
-                
-                let serverName = text || "Download Link";
-                serverName = serverName.replace(/\n|\t/g, ' ').trim();
-                if (serverName.length > 50) serverName = "Download Link";
+        // 1. Download Table Rows (tr) Scraping
+        $('tr, .link-row, .dl-row').each((i, el) => {
+            const linkEl = $(el).find('a');
+            const href = linkEl.attr('href') || $(el).find('a[href]').attr('href') || '';
+            
+            if (href && (href.includes('/links/') || href.includes('pixeldrain') || href.includes('sinhalasub') || href.includes('telegram') || href.includes('filespayout') || href.includes('mega'))) {
+                const rowText = $(el).text().replace(/\s+/g, ' ').trim();
 
-                // Parent HTML කොටසින් 1080p, 720p, 480p වගේ Quality Tag එකක් තියේදැයි සෙවීම
-                const parentText = $(el).closest('tr, .dl-box, .box, div, li, td').text();
-                const resMatch = parentText.match(/(1080p|720p|480p|2160p|4k|360p|HD|FHD|SD|WEB-DL|BluRay)/i);
+                // Extract Quality (FHD 1080p, HD 720p, SD 480p, etc.)
+                const qMatch = rowText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p|2160p|4K)/i);
+                const quality = qMatch ? qMatch[0].toUpperCase() : "HD";
 
-                let finalQualityLabel = serverName;
+                // Extract Size (e.g. 2.30 GB, 632 MB)
+                const sMatch = rowText.match(/(\d+(\.\d+)?\s*(GB|MB))/i);
+                const size = sMatch ? sMatch[0] : "N/A";
 
-                // Parent text එකෙන් Quality එකක් හමු වී, එය Button නමේ නැත්නම් එකතු කිරීම
-                if (resMatch && !serverName.toLowerCase().includes(resMatch[0].toLowerCase())) {
-                    finalQualityLabel = `${serverName} (${resMatch[0].toUpperCase()})`;
+                // Extract Server Name (Pixeldrain, DLServer-01, Telegram, etc.)
+                let server = linkEl.text().trim() || "Download";
+                if (server.length > 30 || !server) {
+                    const serverMatch = rowText.match(/(Pixeldrain|DLServer-\d+|Telegram|FilesPayout|Mega)/i);
+                    server = serverMatch ? serverMatch[0] : "Server";
                 }
 
+                const fullName = `🎥 [Movie File] ${server} - ${quality} (${size})`;
+
                 if (!downloads.some(d => d.link === href)) {
-                    downloads.push({ quality: finalQualityLabel, link: href });
+                    downloads.push({
+                        name: fullName,
+                        quality: quality,
+                        size: size,
+                        link: href
+                    });
                 }
             }
         });
+
+        // 2. Fallback for Links outside tables
+        if (downloads.length === 0) {
+            $('a').each((i, el) => {
+                const href = $(el).attr('href') || '';
+                if (href && (href.includes('/links/') || href.includes('pixeldrain') || href.includes('telegram')) && !href.includes('sinhalasub.lk/?s=')) {
+                    const parentText = $(el).parent().text().replace(/\s+/g, ' ').trim();
+                    
+                    const qMatch = parentText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p)/i);
+                    const quality = qMatch ? qMatch[0].toUpperCase() : "HD";
+
+                    const sMatch = parentText.match(/(\d+(\.\d+)?\s*(GB|MB))/i);
+                    const size = sMatch ? sMatch[0] : "N/A";
+
+                    let server = $(el).text().trim() || "Download";
+
+                    if (!downloads.some(d => d.link === href)) {
+                        downloads.push({
+                            name: `🎥 [Movie File] ${server} - ${quality} (${size})`,
+                            quality: quality,
+                            size: size,
+                            link: href
+                        });
+                    }
+                }
+            });
+        }
 
         res.json({
             status: true,
