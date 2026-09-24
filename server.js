@@ -4,7 +4,6 @@ const cheerio = require('cheerio');
 const cors = require('cors');
 
 const app = express();
-// Railway මගින් ලබාදෙන Dynamic Port එක Auto-assign කරගැනීමට:
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
