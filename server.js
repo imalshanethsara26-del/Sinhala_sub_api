@@ -105,34 +105,49 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
 
         const downloads = [];
 
-        // 1. Download Table Rows (tr) Scraping
-        $('tr, .link-row, .dl-row').each((i, el) => {
-            const linkEl = $(el).find('a');
-            const href = linkEl.attr('href') || $(el).find('a[href]').attr('href') || '';
-            
-            if (href && (href.includes('/links/') || href.includes('pixeldrain') || href.includes('sinhalasub') || href.includes('telegram') || href.includes('filespayout') || href.includes('mega'))) {
+        // Ignored Links (Social Media / Navigation / Ads)
+        const isIgnored = (url) => {
+            if (!url || url.startsWith('#') || url.startsWith('javascript:')) return true;
+            const ignoreList = [
+                'facebook.com', 'twitter.com', 'pinterest.com', 'whatsapp.com', 
+                'youtube.com', 't.me/share', 'sinhalasub.lk/?s=', '/category/', 
+                '/tag/', '/movies/', '/tvshows/', 'adstudio.cloud'
+            ];
+            return ignoreList.some(domain => url.toLowerCase().includes(domain));
+        };
+
+        // Scrape Download Tables & Links
+        $('tr, .link-row, .dl-row, table tbody tr').each((i, el) => {
+            const linkEl = $(el).find('a[href]');
+            const href = linkEl.attr('href') || '';
+
+            if (href && !isIgnored(href)) {
                 const rowText = $(el).text().replace(/\s+/g, ' ').trim();
 
-                // Extract Quality (FHD 1080p, HD 720p, SD 480p, etc.)
-                const qMatch = rowText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p|2160p|4K)/i);
+                // Quality Extract (FHD 1080p, HD 720p, SD 480p, etc.)
+                const qMatch = rowText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p|2160p|4K|WEB-DL|BluRay)/i);
                 const quality = qMatch ? qMatch[0].toUpperCase() : "HD";
 
-                // Extract Size (e.g. 2.30 GB, 632 MB)
+                // File Size Extract (e.g., 3.78 GB, 632 MB)
                 const sMatch = rowText.match(/(\d+(\.\d+)?\s*(GB|MB))/i);
                 const size = sMatch ? sMatch[0] : "N/A";
 
-                // Extract Server Name (Pixeldrain, DLServer-01, Telegram, etc.)
-                let server = linkEl.text().trim() || "Download";
-                if (server.length > 30 || !server) {
-                    const serverMatch = rowText.match(/(Pixeldrain|DLServer-\d+|Telegram|FilesPayout|Mega)/i);
-                    server = serverMatch ? serverMatch[0] : "Server";
+                // Server Name Extraction
+                let server = linkEl.text().trim();
+                if (!server || server.length > 20) {
+                    const parentTab = $(el).closest('.tab-pane, div[id]').attr('id') || '';
+                    server = parentTab || "Server";
                 }
+
+                // Clean server name
+                server = server.replace(/[\n\t]/g, '').trim();
 
                 const fullName = `🎥 [Movie File] ${server} - ${quality} (${size})`;
 
                 if (!downloads.some(d => d.link === href)) {
                     downloads.push({
                         name: fullName,
+                        server: server,
                         quality: quality,
                         size: size,
                         link: href
@@ -141,13 +156,13 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             }
         });
 
-        // 2. Fallback for Links outside tables
+        // Fallback Links Collector
         if (downloads.length === 0) {
-            $('a').each((i, el) => {
+            $('a[href]').each((i, el) => {
                 const href = $(el).attr('href') || '';
-                if (href && (href.includes('/links/') || href.includes('pixeldrain') || href.includes('telegram')) && !href.includes('sinhalasub.lk/?s=')) {
+                if (!isIgnored(href) && (href.includes('/links/') || href.includes('pixeldrain') || href.includes('dotflix') || href.includes('dlserver'))) {
                     const parentText = $(el).parent().text().replace(/\s+/g, ' ').trim();
-                    
+
                     const qMatch = parentText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p)/i);
                     const quality = qMatch ? qMatch[0].toUpperCase() : "HD";
 
@@ -159,6 +174,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                     if (!downloads.some(d => d.link === href)) {
                         downloads.push({
                             name: `🎥 [Movie File] ${server} - ${quality} (${size})`,
+                            server: server,
                             quality: quality,
                             size: size,
                             link: href
