@@ -12,6 +12,61 @@ const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 };
 
+// ==========================================
+// 🛠️ DOTFLIX / SINHALASUB LINK RESOLVER FUNCTION
+// ==========================================
+async function resolveDotflixLink(url) {
+    try {
+        // 1. Direct Pixeldrain link එකක් නම්
+        if (url.includes('pixeldrain.com')) {
+            return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
+        }
+
+        // 2. Sinhalasub /links/ හෝ Dotflix link එකට Request යැවීම
+        const response = await axios.get(url, { headers: HEADERS, timeout: 10000 });
+        const html = response.data;
+        const currentUrl = response.request.res.responseUrl || url;
+
+        let dotflixUrl = null;
+
+        // HTML එක ඇතුළේ Dotflix Share URL එක තියෙදැයි Regex මගින් පරීක්ෂාව
+        const dotflixMatch = html.match(/https?:\/\/dotflix\.store\/share\/[a-zA-Z0-9]+/);
+        if (dotflixMatch) {
+            dotflixUrl = dotflixMatch[0];
+        } else if (currentUrl.includes('dotflix.store')) {
+            dotflixUrl = currentUrl;
+        } else {
+            const $p = cheerio.load(html);
+            dotflixUrl = $p('a[href*="dotflix.store"]').attr('href');
+        }
+
+        // Dotflix URL එක හමුවූයේ නැත්නම් Original URL එක ලබාදෙයි
+        if (!dotflixUrl) return url;
+
+        // 3. Dotflix Page එක Fetch කර Pixeldrain / Direct Link එක extraction කිරීම
+        const dotflixRes = await axios.get(dotflixUrl, { headers: HEADERS, timeout: 10000 });
+        const $d = cheerio.load(dotflixRes.data);
+
+        // A. Pixeldrain Download බටන් එක සෙවීම
+        let pixeldrain = $d('a[href*="pixeldrain.com"]').attr('href');
+        if (pixeldrain) {
+            return pixeldrain.includes('/api/file/') ? pixeldrain : pixeldrain.replace('/u/', '/api/file/');
+        }
+
+        // B. Direct Resume Download බටන් එක සෙවීම
+        let direct = $d('a:contains("Direct Resume Download")').attr('href') || 
+                     $d('a:contains("Download Direct Link")').attr('href');
+        if (direct) {
+            return direct;
+        }
+
+        return dotflixUrl;
+    } catch (err) {
+        console.error(`Error resolving link (${url}):`, err.message);
+        return url; // Error එකක් ආවොත් original link එකම Return කරයි
+    }
+}
+
 // Root Status Route
 app.get('/', (req, res) => {
     res.json({
@@ -105,7 +160,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
 
         const downloads = [];
 
-        // Ignored Links (Social Media / Navigation / Ads)
+        // Ignored Links
         const isIgnored = (url) => {
             if (!url || url.startsWith('#') || url.startsWith('javascript:')) return true;
             const ignoreList = [
@@ -124,24 +179,19 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             if (href && !isIgnored(href)) {
                 const rowText = $(el).text().replace(/\s+/g, ' ').trim();
 
-                // Quality Extract (FHD 1080p, HD 720p, SD 480p, etc.)
                 const qMatch = rowText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p|2160p|4K|WEB-DL|BluRay)/i);
                 const quality = qMatch ? qMatch[0].toUpperCase() : "HD";
 
-                // File Size Extract (e.g., 3.78 GB, 632 MB)
                 const sMatch = rowText.match(/(\d+(\.\d+)?\s*(GB|MB))/i);
                 const size = sMatch ? sMatch[0] : "N/A";
 
-                // Server Name Extraction
                 let server = linkEl.text().trim();
                 if (!server || server.length > 20) {
                     const parentTab = $(el).closest('.tab-pane, div[id]').attr('id') || '';
                     server = parentTab || "Server";
                 }
 
-                // Clean server name
                 server = server.replace(/[\n\t]/g, '').trim();
-
                 const fullName = `🎥 [Movie File] ${server} - ${quality} (${size})`;
 
                 if (!downloads.some(d => d.link === href)) {
@@ -184,6 +234,23 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             });
         }
 
+        // ==========================================
+        // 🚀 RESOLVE DOTFLIX / PASS LINKS IN PARALLEL
+        // ==========================================
+        const finalDownloads = await Promise.all(
+            downloads.map(async (item) => {
+                if (item.link.includes('/links/') || item.link.includes('dotflix')) {
+                    const directUrl = await resolveDotflixLink(item.link);
+                    return {
+                        ...item,
+                        direct_link: directUrl, // Real direct download link
+                        original_link: item.link
+                    };
+                }
+                return item;
+            })
+        );
+
         res.json({
             status: true,
             creator: "IMALSHA API",
@@ -194,7 +261,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                 quality: mainQuality,
                 image,
                 story,
-                downloads
+                downloads: finalDownloads
             }
         });
     } catch (err) {
