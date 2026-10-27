@@ -1,10 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const puppeteer = require('puppeteer');
 const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,69 +12,62 @@ const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 };
 
-// Auto Find Chrome Executable on Render
-function getChromeExecutablePath() {
-    const possiblePaths = [
-        '/opt/render/project/src/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
-        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
-        process.env.PUPPETEER_EXECUTABLE_PATH
-    ];
-
-    for (const p of possiblePaths) {
-        if (p && fs.existsSync(p)) return p;
-    }
-
-    const baseCache = '/opt/render/project/src/.cache/puppeteer/chrome';
-    if (fs.existsSync(baseCache)) {
-        try {
-            const dirs = fs.readdirSync(baseCache);
-            for (const dir of dirs) {
-                const autoPath = path.join(baseCache, dir, 'chrome-linux64', 'chrome');
-                if (fs.existsSync(autoPath)) return autoPath;
-            }
-        } catch (e) {}
-    }
-    return undefined;
-}
-
-// Fast Link Resolver
-async function resolvePageLink(page, url) {
+// ==========================================
+// 🚀 ULTRA-FAST LIGHTWEIGHT DOTFLIX RESOLVER
+// ==========================================
+async function resolveDotflixLinkFast(url) {
     try {
         if (url.includes('pixeldrain.com')) {
             return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
         }
 
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        console.log(`\n🔍 [FAST RESOLVER] Fetching: ${url}`);
 
-        // Quick check & click verification in a tight loop
-        for (let i = 0; i < 3; i++) {
-            await new Promise(r => setTimeout(r, 1500));
+        // 1. Fetch SinhalaSub link page
+        const response = await axios.get(url, { headers: HEADERS, timeout: 8000 });
+        const html = response.data;
 
-            const direct = await page.evaluate(() => {
-                const pix = document.querySelector('a[href*="pixeldrain.com"]');
-                if (pix && pix.href) return pix.href;
+        let dotflixUrl = null;
 
-                const btns = Array.from(document.querySelectorAll('a, button, div.btn'));
-                const btn = btns.find(b => {
-                    const txt = (b.innerText || '').toUpperCase();
-                    return txt.includes('DOWNLOAD') || txt.includes('VERIFY') || txt.includes('CLICK');
-                });
-                if (btn) btn.click();
-                return null;
-            });
+        // Extract Dotflix share URL via Regex or Cheerio
+        const dotflixMatch = html.match(/https?:\/\/dotflix\.store\/share\/[a-zA-Z0-9]+/);
+        if (dotflixMatch) {
+            dotflixUrl = dotflixMatch[0];
+        } else {
+            const $ = cheerio.load(html);
+            const href = $('a[href*="dotflix.store"]').attr('href');
+            if (href) dotflixUrl = href;
+        }
 
-            if (direct) {
-                return direct.includes('/api/file/') ? direct : direct.replace('/u/', '/api/file/');
+        if (!dotflixUrl) return url;
+
+        console.log(`🔗 Found Dotflix Portal: ${dotflixUrl}`);
+
+        // 2. Fetch Dotflix verification page
+        const dotflixRes = await axios.get(dotflixUrl, { headers: HEADERS, timeout: 8000 });
+        const dotflixHtml = dotflixRes.data;
+        const $d = cheerio.load(dotflixHtml);
+
+        // Look for Pixeldrain link in anchors
+        let pixeldrainLink = $d('a[href*="pixeldrain.com"]').attr('href');
+
+        // If not found in anchors, search raw HTML text via Regex (handles hidden scripts/redirects)
+        if (!pixeldrainLink) {
+            const pixMatch = dotflixHtml.match(/https?:\/\/[^\s"'<>]+pixeldrain\.com[^\s"'<>]+/i);
+            if (pixMatch) {
+                pixeldrainLink = pixMatch[0];
             }
         }
 
-        const finalUrl = page.url();
-        if (finalUrl.includes('pixeldrain.com')) {
-            return finalUrl.includes('/api/file/') ? finalUrl : finalUrl.replace('/u/', '/api/file/');
+        if (pixeldrainLink) {
+            const cleanLink = pixeldrainLink.includes('/api/file/') ? pixeldrainLink : pixeldrainLink.replace('/u/', '/api/file/');
+            console.log(`✨ [RESOLVED] Direct Pixeldrain: ${cleanLink}`);
+            return cleanLink;
         }
 
         return url;
     } catch (err) {
+        console.error(`❌ [RESOLVER ERROR] for (${url}): ${err.message}`);
         return url;
     }
 }
@@ -130,9 +120,8 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
     }
 });
 
-// Info & Download Endpoint (Optimized to process only top Pixeldrain/Download links for speed)
+// Info & Download Endpoint (Lightning Fast Processing)
 app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
-    let browser = null;
     try {
         const movieUrl = req.query.url;
         if (!movieUrl) return res.status(400).json({ status: false, message: "URL required" });
@@ -145,7 +134,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         let image = $('meta[property="og:image"]').attr('content') || $('.poster img').first().attr('src') || '';
 
         let imdb_rating = $('.num, .rating, .imdb_rating').first().text().trim() || "N/A";
-        let mainQuality = $('.quality').first().text().trim() || "HD / WEB-DL";
+        let mainQuality = $('span.quality, .quality').first().text().trim() || "HD / WEB-DL";
 
         let story = '';
         $('.entry-content p, article p').each((i, el) => {
@@ -163,6 +152,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             return ignoreList.some(domain => url.toLowerCase().includes(domain));
         };
 
+        // Scrape raw download links
         $('tr, .link-row, table tbody tr').each((i, el) => {
             const linkEl = $(el).find('a[href]');
             const href = linkEl.attr('href') || '';
@@ -177,7 +167,6 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                 let server = linkEl.text().trim() || "Server";
                 server = server.replace(/[\n\t]/g, '').trim();
 
-                // Only take Pixeldrain or main download links to keep it super fast and avoid timeout
                 if (!downloads.some(d => d.link === href)) {
                     downloads.push({
                         name: `🎥 [Movie File] ${server} - ${quality} (${size})`,
@@ -190,43 +179,22 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             }
         });
 
-        console.log(`📦 Scraped ${downloads.length} raw links. Launching fast browser instance...`);
+        console.log(`📦 Scraped ${downloads.length} raw links. Resolving links concurrently...`);
 
-        const chromePath = getChromeExecutablePath();
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: chromePath,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ]
-        });
-
-        const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
-
-        // Process only first few primary links to prevent timeout (or all if light)
-        const finalDownloads = [];
-        for (const item of downloads.slice(0, 6)) { // Process top 6 links for maximum speed
-            if (item.link.includes('/links/') || item.link.includes('dotflix')) {
-                const directUrl = await resolvePageLink(page, item.link);
-                finalDownloads.push({
-                    ...item,
-                    direct_link: directUrl,
-                    original_link: item.link
-                });
-            } else {
-                finalDownloads.push(item);
-            }
-        }
-
-        await browser.close();
+        // Resolve all links concurrently and instantly using lightweight requests
+        const finalDownloads = await Promise.all(
+            downloads.map(async (item) => {
+                if (item.link.includes('/links/') || item.link.includes('dotflix')) {
+                    const directUrl = await resolveDotflixLinkFast(item.link);
+                    return {
+                        ...item,
+                        direct_link: directUrl,
+                        original_link: item.link
+                    };
+                }
+                return item;
+            })
+        );
 
         res.json({
             status: true,
@@ -243,7 +211,6 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         });
 
     } catch (err) {
-        if (browser) await browser.close();
         console.error(`❌ [INFO DL ERROR]: ${err.message}`);
         res.status(500).json({ status: false, error: err.message });
     }
