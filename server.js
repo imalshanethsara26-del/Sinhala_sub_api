@@ -15,9 +15,7 @@ const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 };
 
-// ==========================================
-// 🛠️ HELPER: FIND CHROME EXECUTABLE ON RENDER
-// ==========================================
+// Auto Find Chrome Executable
 function getChromeExecutablePath() {
     const possiblePaths = [
         '/opt/render/project/src/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
@@ -26,122 +24,64 @@ function getChromeExecutablePath() {
     ];
 
     for (const p of possiblePaths) {
-        if (p && fs.existsSync(p)) {
-            console.log(`📌 Found Chrome executable at: ${p}`);
-            return p;
-        }
+        if (p && fs.existsSync(p)) return p;
     }
 
-    // Try finding dynamically in cache directory if specific version path differs
     const baseCache = '/opt/render/project/src/.cache/puppeteer/chrome';
     if (fs.existsSync(baseCache)) {
         try {
             const dirs = fs.readdirSync(baseCache);
             for (const dir of dirs) {
                 const autoPath = path.join(baseCache, dir, 'chrome-linux64', 'chrome');
-                if (fs.existsSync(autoPath)) {
-                    console.log(`📌 Dynamically found Chrome at: ${autoPath}`);
-                    return autoPath;
-                }
+                if (fs.existsSync(autoPath)) return autoPath;
             }
-        } catch (e) {
-            console.log(`⚠️ Auto-detect path error: ${e.message}`);
-        }
+        } catch (e) {}
     }
-
-    console.log(`⚠️ Chrome path not found in cache, using default puppeteer launcher.`);
     return undefined;
 }
 
-// ==========================================
-// 🛠️ ADVANCED PUPPETEER MULTI-STEP RESOLVER
-// ==========================================
-async function resolveDotflixLink(url) {
-    let browser = null;
+// Single Link Resolver using Page instance
+async function resolvePageLink(page, url) {
     try {
-        console.log(`\n==============================================`);
-        console.log(`🔍 [RESOLVER START] Processing Link: ${url}`);
-        console.log(`==============================================`);
+        console.log(`\n🔍 [RESOLVER] Processing Link: ${url}`);
 
         if (url.includes('pixeldrain.com')) {
-            const cleanPix = url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
-            console.log(`✅ Already a Pixeldrain link: ${cleanPix}`);
-            return cleanPix;
+            return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
         }
 
-        const chromePath = getChromeExecutablePath();
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
-        browser = await puppeteer.launch({
-            headless: true,
-            executablePath: chromePath,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ]
-        });
+        // Loop through verification steps (Verify Link 1, 2, 3)
+        for (let step = 1; step <= 3; step++) {
+            await new Promise(r => setTimeout(r, 3500));
 
-        const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
-        
-        console.log(`🌐 Navigating to redirect/verification page...`);
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-        // Loop through verification steps (Verify Link 1, 2, 3 / Download Now)
-        for (let step = 1; step <= 4; step++) {
-            console.log(`⏳ [STEP ${step}] Waiting for countdown timer & verification buttons...`);
-            await new Promise(r => setTimeout(r, 4000));
-
-            const clicked = await page.evaluate(() => {
+            await page.evaluate(() => {
                 const buttons = Array.from(document.querySelectorAll('a, button, div.btn'));
                 const targetBtn = buttons.find(b => {
                     const text = (b.innerText || '').toUpperCase();
                     return text.includes('VERIFY LINK') || text.includes('DOWNLOAD NOW') || text.includes('CLICK HERE') || text.includes('PROCEED');
                 });
-                if (targetBtn) {
-                    targetBtn.click();
-                    return true;
-                }
-                return false;
+                if (targetBtn) targetBtn.click();
             });
-
-            if (clicked) {
-                console.log(`🖱️ [STEP ${step}] Clicked verification/download button!`);
-            } else {
-                console.log(`ℹ️ [STEP ${step}] No active verification button, continuing state check...`);
-            }
         }
 
-        console.log(`⏳ Waiting for final redirect to complete...`);
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, 4000));
 
         const finalUrl = page.url();
-        console.log(`🎯 Current Browser URL: ${finalUrl}`);
-
         const domPixeldrain = await page.evaluate(() => {
             const a = document.querySelector('a[href*="pixeldrain.com"]');
             return a ? a.href : null;
         });
-
-        await browser.close();
 
         let resolved = domPixeldrain || finalUrl;
         if (resolved.includes('pixeldrain.com')) {
             resolved = resolved.includes('/api/file/') ? resolved : resolved.replace('/u/', '/api/file/');
         }
 
-        console.log(`✨ [RESOLVER SUCCESS] Final Direct Link: ${resolved}`);
-        console.log(`==============================================\n`);
+        console.log(`✨ [SUCCESS] Direct Link: ${resolved}`);
         return resolved;
-
     } catch (err) {
-        if (browser) await browser.close();
-        console.error(`❌ [RESOLVER ERROR] for (${url}): ${err.message}`);
+        console.error(`❌ [ERROR] for (${url}): ${err.message}`);
         return url;
     }
 }
@@ -165,7 +105,6 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
         const query = req.query.q;
         if (!query) return res.status(400).json({ status: false, message: "Search term required" });
 
-        console.log(`\n🔍 [SEARCH] Query: "${query}"`);
         const searchUrl = "https://sinhalasub.lk/?s=" + encodeURIComponent(query);
         const response = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
         const $ = cheerio.load(response.data);
@@ -192,16 +131,15 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
             }
         });
 
-        console.log(`🎯 Found ${results.length} search results.`);
         res.json({ status: true, creator: "IMALSHA API", site: "sinhalasub", results_count: results.length, data: results });
     } catch (err) {
-        console.error(`❌ [SEARCH ERROR]: ${err.message}`);
         res.status(500).json({ status: false, error: err.message });
     }
 });
 
 // Info & Download Endpoint
 app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
+    let browser = null;
     try {
         const movieUrl = req.query.url;
         if (!movieUrl) return res.status(400).json({ status: false, message: "URL required" });
@@ -210,33 +148,16 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         const response = await axios.get(movieUrl, { headers: HEADERS, timeout: 10000 });
         const $ = cheerio.load(response.data);
 
-        let title = $('h1').first().text().trim();
-        if (!title) title = $('title').text().trim();
+        let title = $('h1').first().text().trim() || $('title').text().trim();
+        let image = $('meta[property="og:image"]').attr('content') || $('.poster img').first().attr('src') || '';
 
-        let image = $('meta[property="og:image"]').attr('content');
-        if (!image) image = $('.poster img, .single-poster img, article img, .entry-content img').first().attr('src') || '';
-
-        // IMDb Rating
-        let imdb_rating = $('.num, .rating, .imdb_rating, .score, .imdb, span[itemprop="ratingValue"]').first().text().trim();
-        if (!imdb_rating) {
-            const pageText = $.text();
-            const match = pageText.match(/IMDb\s*:?\s*([\d\.]+(\/10)?)/i);
-            if (match) imdb_rating = match[1];
-        }
-        if (!imdb_rating) imdb_rating = "N/A";
-
-        // Main Quality
-        let mainQuality = $('.quality, .mvoie-quality, .badge-quality, .quality-tag, .dt_quality').first().text().trim();
-        if (!mainQuality) {
-            const match = title.match(/(1080p|720p|480p|2160p|4K|WEB-DL|HDTV|BluRay|HD)/i);
-            if (match) mainQuality = match[0];
-        }
-        if (!mainQuality) mainQuality = "HD / WEB-DL";
+        let imdb_rating = $('.num, .rating, .imdb_rating').first().text().trim() || "N/A";
+        let mainQuality = $('.quality').first().text().trim() || "HD / WEB-DL";
 
         let story = '';
-        $('.entry-content p, .description p, article p').each((i, el) => {
+        $('.entry-content p, article p').each((i, el) => {
             const text = $(el).text().trim();
-            if (text && text.length > 30 && !text.includes('උපසිරැසි') && !text.includes('Sinhala Subtitles')) {
+            if (text && text.length > 30 && !text.includes('උපසිරැසි')) {
                 if (!story) story = text;
             }
         });
@@ -246,40 +167,27 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
 
         const isIgnored = (url) => {
             if (!url || url.startsWith('#') || url.startsWith('javascript:')) return true;
-            const ignoreList = [
-                'facebook.com', 'twitter.com', 'pinterest.com', 'whatsapp.com', 
-                'youtube.com', 't.me/share', 'sinhalasub.lk/?s=', '/category/', 
-                '/tag/', '/movies/', '/tvshows/', 'adstudio.cloud'
-            ];
+            const ignoreList = ['facebook.com', 'twitter.com', 'whatsapp.com', 'youtube.com', 't.me/share', 'sinhalasub.lk/?s='];
             return ignoreList.some(domain => url.toLowerCase().includes(domain));
         };
 
-        // Scrape Download Tables & Links
-        $('tr, .link-row, .dl-row, table tbody tr').each((i, el) => {
+        $('tr, .link-row, table tbody tr').each((i, el) => {
             const linkEl = $(el).find('a[href]');
             const href = linkEl.attr('href') || '';
 
             if (href && !isIgnored(href)) {
                 const rowText = $(el).text().replace(/\s+/g, ' ').trim();
-
-                const qMatch = rowText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p|2160p|4K|WEB-DL|BluRay)/i);
+                const qMatch = rowText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p)/i);
                 const quality = qMatch ? qMatch[0].toUpperCase() : "HD";
-
                 const sMatch = rowText.match(/(\d+(\.\d+)?\s*(GB|MB))/i);
                 const size = sMatch ? sMatch[0] : "N/A";
 
-                let server = linkEl.text().trim();
-                if (!server || server.length > 20) {
-                    const parentTab = $(el).closest('.tab-pane, div[id]').attr('id') || '';
-                    server = parentTab || "Server";
-                }
-
+                let server = linkEl.text().trim() || "Server";
                 server = server.replace(/[\n\t]/g, '').trim();
-                const fullName = `🎥 [Movie File] ${server} - ${quality} (${size})`;
 
                 if (!downloads.some(d => d.link === href)) {
                     downloads.push({
-                        name: fullName,
+                        name: `🎥 [Movie File] ${server} - ${quality} (${size})`,
                         server: server,
                         quality: quality,
                         size: size,
@@ -289,49 +197,44 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             }
         });
 
-        if (downloads.length === 0) {
-            $('a[href]').each((i, el) => {
-                const href = $(el).attr('href') || '';
-                if (!isIgnored(href) && (href.includes('/links/') || href.includes('pixeldrain') || href.includes('dotflix') || href.includes('dlserver'))) {
-                    const parentText = $(el).parent().text().replace(/\s+/g, ' ').trim();
+        console.log(`📦 Scraped ${downloads.length} raw links. Launching single Chrome instance for Queue processing...`);
 
-                    const qMatch = parentText.match(/(FHD\s*1080p|HD\s*720p|SD\s*480p|1080p|720p|480p)/i);
-                    const quality = qMatch ? qMatch[0].toUpperCase() : "HD";
+        // Launch SINGLE browser instance for all links to save RAM
+        const chromePath = getChromeExecutablePath();
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: chromePath,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu'
+            ]
+        });
 
-                    const sMatch = parentText.match(/(\d+(\.\d+)?\s*(GB|MB))/i);
-                    const size = sMatch ? sMatch[0] : "N/A";
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-                    let server = $(el).text().trim() || "Download";
-
-                    if (!downloads.some(d => d.link === href)) {
-                        downloads.push({
-                            name: `🎥 [Movie File] ${server} - ${quality} (${size})`,
-                            server: server,
-                            quality: quality,
-                            size: size,
-                            link: href
-                        });
-                    }
-                }
-            });
+        // PROCESS LINKS SEQUENTIALLY (ONE BY ONE)
+        const finalDownloads = [];
+        for (const item of downloads) {
+            if (item.link.includes('/links/') || item.link.includes('dotflix')) {
+                const directUrl = await resolvePageLink(page, item.link);
+                finalDownloads.push({
+                    ...item,
+                    direct_link: directUrl,
+                    original_link: item.link
+                });
+            } else {
+                finalDownloads.push(item);
+            }
         }
 
-        console.log(`📦 Scraped ${downloads.length} raw download links. Resolving through Puppeteer bypass...`);
-
-        // Resolve links in parallel
-        const finalDownloads = await Promise.all(
-            downloads.map(async (item) => {
-                if (item.link.includes('/links/') || item.link.includes('dotflix')) {
-                    const directUrl = await resolveDotflixLink(item.link);
-                    return {
-                        ...item,
-                        direct_link: directUrl,
-                        original_link: item.link
-                    };
-                }
-                return item;
-            })
-        );
+        await browser.close();
 
         res.json({
             status: true,
@@ -346,7 +249,9 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                 downloads: finalDownloads
             }
         });
+
     } catch (err) {
+        if (browser) await browser.close();
         console.error(`❌ [INFO DL ERROR]: ${err.message}`);
         res.status(500).json({ status: false, error: err.message });
     }
