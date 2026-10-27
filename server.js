@@ -9,11 +9,12 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 
 const HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Referer': 'https://sinhalasub.lk/'
 };
 
 // ==========================================
-// 🚀 ULTRA-FAST LIGHTWEIGHT DOTFLIX RESOLVER
+// 🚀 BULLETPROOF LIGHTWEIGHT RESOLVER
 // ==========================================
 async function resolveDotflixLinkFast(url) {
     try {
@@ -21,50 +22,69 @@ async function resolveDotflixLinkFast(url) {
             return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
         }
 
-        console.log(`\n🔍 [FAST RESOLVER] Fetching: ${url}`);
+        console.log(`\n🔍 [RESOLVER] Fetching: ${url}`);
 
-        // 1. Fetch SinhalaSub link page
-        const response = await axios.get(url, { headers: HEADERS, timeout: 8000 });
+        // 1. Request the sinhalasub link page and follow redirects automatically
+        const response = await axios.get(url, { 
+            headers: HEADERS, 
+            timeout: 10000,
+            maxRedirects: 5 
+        });
+
+        const finalUrl = response.config.url || url;
         const html = response.data;
 
-        let dotflixUrl = null;
-
-        // Extract Dotflix share URL via Regex or Cheerio
-        const dotflixMatch = html.match(/https?:\/\/dotflix\.store\/share\/[a-zA-Z0-9]+/);
-        if (dotflixMatch) {
-            dotflixUrl = dotflixMatch[0];
-        } else {
-            const $ = cheerio.load(html);
-            const href = $('a[href*="dotflix.store"]').attr('href');
-            if (href) dotflixUrl = href;
+        // Check if final redirected URL is already pixeldrain
+        if (finalUrl.includes('pixeldrain.com')) {
+            return finalUrl.includes('/api/file/') ? finalUrl : finalUrl.replace('/u/', '/api/file/');
         }
 
-        if (!dotflixUrl) return url;
+        const $ = cheerio.load(html);
 
-        console.log(`🔗 Found Dotflix Portal: ${dotflixUrl}`);
+        // 2. Check for direct Pixeldrain anchors in HTML
+        let pixLink = $('a[href*="pixeldrain.com"]').attr('href');
+        if (pixLink) {
+            return pixLink.includes('/api/file/') ? pixLink : pixLink.replace('/u/', '/api/file/');
+        }
 
-        // 2. Fetch Dotflix verification page
-        const dotflixRes = await axios.get(dotflixUrl, { headers: HEADERS, timeout: 8000 });
-        const dotflixHtml = dotflixRes.data;
-        const $d = cheerio.load(dotflixHtml);
-
-        // Look for Pixeldrain link in anchors
-        let pixeldrainLink = $d('a[href*="pixeldrain.com"]').attr('href');
-
-        // If not found in anchors, search raw HTML text via Regex (handles hidden scripts/redirects)
-        if (!pixeldrainLink) {
-            const pixMatch = dotflixHtml.match(/https?:\/\/[^\s"'<>]+pixeldrain\.com[^\s"'<>]+/i);
-            if (pixMatch) {
-                pixeldrainLink = pixMatch[0];
+        // 3. Check for Meta Refresh redirect inside the page
+        const metaRefresh = $('meta[http-equiv="refresh" i]').attr('content');
+        if (metaRefresh) {
+            const match = metaRefresh.match(/url=([^;\s]+)/i);
+            if (match && match[1]) {
+                const targetUrl = match[1].replace(/['"]/g, '');
+                if (targetUrl.includes('pixeldrain.com')) {
+                    return targetUrl.includes('/api/file/') ? targetUrl : targetUrl.replace('/u/', '/api/file/');
+                }
+                // Fetch the target redirect page
+                const subRes = await axios.get(targetUrl, { headers: HEADERS, maxRedirects: 5, timeout: 8000 });
+                const subMatch = subRes.data.match(/https?:\/\/[^\s"'<>]+pixeldrain\.com[^\s"'<>]+/i);
+                if (subMatch) {
+                    let clean = subMatch[0];
+                    return clean.includes('/api/file/') ? clean : clean.replace('/u/', '/api/file/');
+                }
             }
         }
 
-        if (pixeldrainLink) {
-            const cleanLink = pixeldrainLink.includes('/api/file/') ? pixeldrainLink : pixeldrainLink.replace('/u/', '/api/file/');
-            console.log(`✨ [RESOLVED] Direct Pixeldrain: ${cleanLink}`);
-            return cleanLink;
+        // 4. Deep Regex scan in raw HTML for any pixeldrain URL
+        const rawMatch = html.match(/https?:\/\/[^\s"'<>]+pixeldrain\.com[^\s"'<>]+/i);
+        if (rawMatch) {
+            let clean = rawMatch[0];
+            return clean.includes('/api/file/') ? clean : clean.replace('/u/', '/api/file/');
         }
 
+        // 5. Check if there's a dotflix or external portal link and fetch it
+        const externalLink = $('a[href*="dotflix"]').attr('href') || $('a[href*="store"]').attr('href');
+        if (externalLink) {
+            const extRes = await axios.get(externalLink, { headers: HEADERS, timeout: 8000 });
+            const extMatch = extRes.data.match(/https?:\/\/[^\s"'<>]+pixeldrain\.com[^\s"'<>]+/i);
+            if (extMatch) {
+                let clean = extMatch[0];
+                return clean.includes('/api/file/') ? clean : clean.replace('/u/', '/api/file/');
+            }
+        }
+
+        console.log(`⚠️ Could not resolve, returning original: ${url}`);
         return url;
     } catch (err) {
         console.error(`❌ [RESOLVER ERROR] for (${url}): ${err.message}`);
@@ -120,7 +140,7 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
     }
 });
 
-// Info & Download Endpoint (Lightning Fast Processing)
+// Info & Download Endpoint
 app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
     try {
         const movieUrl = req.query.url;
@@ -152,7 +172,6 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             return ignoreList.some(domain => url.toLowerCase().includes(domain));
         };
 
-        // Scrape raw download links
         $('tr, .link-row, table tbody tr').each((i, el) => {
             const linkEl = $(el).find('a[href]');
             const href = linkEl.attr('href') || '';
@@ -181,7 +200,6 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
 
         console.log(`📦 Scraped ${downloads.length} raw links. Resolving links concurrently...`);
 
-        // Resolve all links concurrently and instantly using lightweight requests
         const finalDownloads = await Promise.all(
             downloads.map(async (item) => {
                 if (item.link.includes('/links/') || item.link.includes('dotflix')) {
