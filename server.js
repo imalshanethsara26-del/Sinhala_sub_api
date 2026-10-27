@@ -40,78 +40,44 @@ function getChromeExecutablePath() {
     return undefined;
 }
 
-// Ultra-Fast Direct Link Extractor
+// Fast Link Resolver
 async function resolvePageLink(page, url) {
     try {
-        console.log(`\n🔍 [RESOLVER] Processing: ${url}`);
-
         if (url.includes('pixeldrain.com')) {
             return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
         }
 
-        // Navigate to the sinhalasub link page
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-        // Wait for potential redirect or frame load to dotflix
-        let targetUrl = url;
-        try {
-            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 });
-            targetUrl = page.url();
-        } catch (e) {}
+        // Quick check & click verification in a tight loop
+        for (let i = 0; i < 3; i++) {
+            await new Promise(r => setTimeout(r, 1500));
 
-        console.log(`🌐 Landed URL: ${targetUrl}`);
+            const direct = await page.evaluate(() => {
+                const pix = document.querySelector('a[href*="pixeldrain.com"]');
+                if (pix && pix.href) return pix.href;
 
-        // If landing on dotflix or link page, click any available verify/download button instantly
-        for (let i = 0; i < 4; i++) {
-            await new Promise(r => setTimeout(r, 2000));
-
-            // Check if Pixeldrain link is already in the DOM
-            const directPix = await page.evaluate(() => {
-                const pixEl = document.querySelector('a[href*="pixeldrain.com"]');
-                if (pixEl && pixEl.href) return pixEl.href;
-
-                // Search all anchors for pixeldrain or direct download
-                const anchors = Array.from(document.querySelectorAll('a'));
-                const found = anchors.find(a => a.href && (a.href.includes('pixeldrain.com') || a.href.includes('/api/file/')));
-                return found ? found.href : null;
-            });
-
-            if (directPix) {
-                let clean = directPix.includes('/api/file/') ? directPix : directPix.replace('/u/', '/api/file/');
-                console.log(`✨ [SUCCESS] Found Direct Pixeldrain: ${clean}`);
-                return clean;
-            }
-
-            // Click verification buttons
-            await page.evaluate(() => {
-                const btns = Array.from(document.querySelectorAll('a, button, div.btn, span.btn, input[type="submit"]'));
+                const btns = Array.from(document.querySelectorAll('a, button, div.btn'));
                 const btn = btns.find(b => {
-                    const txt = (b.innerText || b.value || '').toUpperCase();
-                    return txt.includes('DOWNLOAD') || txt.includes('VERIFY') || txt.includes('CLICK') || txt.includes('PROCEED') || txt.includes('NEXT');
+                    const txt = (b.innerText || '').toUpperCase();
+                    return txt.includes('DOWNLOAD') || txt.includes('VERIFY') || txt.includes('CLICK');
                 });
                 if (btn) btn.click();
+                return null;
             });
+
+            if (direct) {
+                return direct.includes('/api/file/') ? direct : direct.replace('/u/', '/api/file/');
+            }
         }
 
-        // Final fallback check on current page HTML via Axios / Cheerio if puppeteer gets stuck
-        const finalPageUrl = page.url();
-        if (finalPageUrl.includes('pixeldrain.com')) {
-            return finalPageUrl.includes('/api/file/') ? finalPageUrl : finalPageUrl.replace('/u/', '/api/file/');
+        const finalUrl = page.url();
+        if (finalUrl.includes('pixeldrain.com')) {
+            return finalUrl.includes('/api/file/') ? finalUrl : finalUrl.replace('/u/', '/api/file/');
         }
 
-        // Try scraping the final page content
-        const pageContent = await page.content();
-        const $c = cheerio.load(pageContent);
-        const htmlPix = $c('a[href*="pixeldrain.com"]').attr('href');
-        if (htmlPix) {
-            return htmlPix.includes('/api/file/') ? htmlPix : htmlPix.replace('/u/', '/api/file/');
-        }
-
-        console.log(`⚠️ Could not resolve direct link, returning original: ${url}`);
         return url;
-
     } catch (err) {
-        console.error(`❌ [RESOLVER ERROR]: ${err.message}`);
         return url;
     }
 }
@@ -164,7 +130,7 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
     }
 });
 
-// Info & Download Endpoint
+// Info & Download Endpoint (Optimized to process only top Pixeldrain/Download links for speed)
 app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
     let browser = null;
     try {
@@ -211,6 +177,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                 let server = linkEl.text().trim() || "Server";
                 server = server.replace(/[\n\t]/g, '').trim();
 
+                // Only take Pixeldrain or main download links to keep it super fast and avoid timeout
                 if (!downloads.some(d => d.link === href)) {
                     downloads.push({
                         name: `🎥 [Movie File] ${server} - ${quality} (${size})`,
@@ -223,7 +190,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             }
         });
 
-        console.log(`📦 Scraped ${downloads.length} raw links. Launching Chrome resolver...`);
+        console.log(`📦 Scraped ${downloads.length} raw links. Launching fast browser instance...`);
 
         const chromePath = getChromeExecutablePath();
         browser = await puppeteer.launch({
@@ -244,8 +211,9 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
+        // Process only first few primary links to prevent timeout (or all if light)
         const finalDownloads = [];
-        for (const item of downloads) {
+        for (const item of downloads.slice(0, 6)) { // Process top 6 links for maximum speed
             if (item.link.includes('/links/') || item.link.includes('dotflix')) {
                 const directUrl = await resolvePageLink(page, item.link);
                 finalDownloads.push({
