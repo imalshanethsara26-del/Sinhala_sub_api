@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 const cors = require('cors');
 
 const app = express();
@@ -13,57 +14,73 @@ const HEADERS = {
 };
 
 // ==========================================
-// 🛠️ DOTFLIX / SINHALASUB LINK RESOLVER FUNCTION
+// 🛠️ PUPPETEER LINK RESOLVER (Bypasses Timers & Verification)
 // ==========================================
 async function resolveDotflixLink(url) {
+    let browser = null;
     try {
-        // 1. Direct Pixeldrain link එකක් නම්
+        // Direct Pixeldrain link එකක් නම් කෙළින්ම රිටර්න් කරයි
         if (url.includes('pixeldrain.com')) {
             return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
         }
 
-        // 2. Sinhalasub /links/ හෝ Dotflix link එකට Request යැවීම
-        const response = await axios.get(url, { headers: HEADERS, timeout: 10000 });
-        const html = response.data;
-        const currentUrl = response.request.res.responseUrl || url;
+        browser = await puppeteer.launch({
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu'
+            ]
+        });
 
-        let dotflixUrl = null;
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        
+        console.log(`🌐 Resolving link via Puppeteer: ${url}`);
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-        // HTML එක ඇතුළේ Dotflix Share URL එක තියෙදැයි Regex මගින් පරීක්ෂාව
-        const dotflixMatch = html.match(/https?:\/\/dotflix\.store\/share\/[a-zA-Z0-9]+/);
-        if (dotflixMatch) {
-            dotflixUrl = dotflixMatch[0];
-        } else if (currentUrl.includes('dotflix.store')) {
-            dotflixUrl = currentUrl;
-        } else {
-            const $p = cheerio.load(html);
-            dotflixUrl = $p('a[href*="dotflix.store"]').attr('href');
+        // Wait for timers / verification steps to complete (approx 6 seconds)
+        await new Promise(r => setTimeout(r, 6000));
+
+        // Try clicking any "Verify Link" or "Download Now" button if present
+        try {
+            await page.evaluate(() => {
+                const btns = Array.from(document.querySelectorAll('a, button'));
+                const target = btns.find(b => b.innerText.includes('VERIFY') || b.innerText.includes('DOWNLOAD NOW') || b.innerText.includes('Click Here'));
+                if (target) target.click();
+            });
+            await new Promise(r => setTimeout(r, 4000));
+        } catch (e) {
+            // Ignore click errors if button not found immediately
         }
 
-        // Dotflix URL එක හමුවූයේ නැත්නම් Original URL එක ලබාදෙයි
-        if (!dotflixUrl) return url;
+        // Get final resolved URL or check page for Pixeldrain / Dotflix links
+        const finalUrl = await page.evaluate(() => {
+            const pixeldrainLink = document.querySelector('a[href*="pixeldrain.com"]');
+            if (pixeldrainLink) return pixeldrainLink.href;
 
-        // 3. Dotflix Page එක Fetch කර Pixeldrain / Direct Link එක extraction කිරීම
-        const dotflixRes = await axios.get(dotflixUrl, { headers: HEADERS, timeout: 10000 });
-        const $d = cheerio.load(dotflixRes.data);
+            const dotflixLink = document.querySelector('a[href*="dotflix.store"]');
+            if (dotflixLink) return dotflixLink.href;
 
-        // A. Pixeldrain Download බටන් එක සෙවීම
-        let pixeldrain = $d('a[href*="pixeldrain.com"]').attr('href');
-        if (pixeldrain) {
-            return pixeldrain.includes('/api/file/') ? pixeldrain : pixeldrain.replace('/u/', '/api/file/');
+            return window.location.href;
+        });
+
+        await browser.close();
+
+        if (finalUrl.includes('pixeldrain.com')) {
+            return finalUrl.includes('/api/file/') ? finalUrl : finalUrl.replace('/u/', '/api/file/');
         }
 
-        // B. Direct Resume Download බටන් එක සෙවීම
-        let direct = $d('a:contains("Direct Resume Download")').attr('href') || 
-                     $d('a:contains("Download Direct Link")').attr('href');
-        if (direct) {
-            return direct;
-        }
-
-        return dotflixUrl;
+        return finalUrl;
     } catch (err) {
+        if (browser) await browser.close();
         console.error(`Error resolving link (${url}):`, err.message);
-        return url; // Error එකක් ආවොත් original link එකම Return කරයි
+        return url;
     }
 }
 
@@ -160,7 +177,6 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
 
         const downloads = [];
 
-        // Ignored Links
         const isIgnored = (url) => {
             if (!url || url.startsWith('#') || url.startsWith('javascript:')) return true;
             const ignoreList = [
@@ -206,7 +222,6 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             }
         });
 
-        // Fallback Links Collector
         if (downloads.length === 0) {
             $('a[href]').each((i, el) => {
                 const href = $(el).attr('href') || '';
@@ -235,7 +250,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         }
 
         // ==========================================
-        // 🚀 RESOLVE DOTFLIX / PASS LINKS IN PARALLEL
+        // 🚀 RESOLVE LINKS USING PUPPETEER IN PARALLEL
         // ==========================================
         const finalDownloads = await Promise.all(
             downloads.map(async (item) => {
@@ -243,7 +258,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                     const directUrl = await resolveDotflixLink(item.link);
                     return {
                         ...item,
-                        direct_link: directUrl, // Real direct download link
+                        direct_link: directUrl, // Automatically resolved direct link!
                         original_link: item.link
                     };
                 }
