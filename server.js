@@ -40,7 +40,7 @@ function getChromeExecutablePath() {
     return undefined;
 }
 
-// Resolver with Built-in AdGuard / Request Blocker
+// Ultra-Fast Direct Link Extractor
 async function resolvePageLink(page, url) {
     try {
         console.log(`\n🔍 [RESOLVER] Processing: ${url}`);
@@ -49,67 +49,66 @@ async function resolvePageLink(page, url) {
             return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
         }
 
-        // Enable AdGuard-style Request Interception
-        await page.setRequestInterception(true);
-        const requestHandler = interceptedRequest => {
-            const reqUrl = interceptedRequest.url().toLowerCase();
-            const resourceType = interceptedRequest.resourceType();
+        // Navigate to the sinhalasub link page
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
 
-            // Block ads, popups, analytics, and heavy unnecessary resources (images, fonts)
-            const adDomains = ['googleads', 'googlesyndication', 'popads', 'adcash', 'histats', 'truepass', 'analytic', 'stat'];
-            const isAd = adDomains.some(domain => reqUrl.includes(domain));
+        // Wait for potential redirect or frame load to dotflix
+        let targetUrl = url;
+        try {
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 });
+            targetUrl = page.url();
+        } catch (e) {}
 
-            if (isAd || resourceType === 'image' || resourceType === 'font') {
-                interceptedRequest.abort();
-            } else {
-                interceptedRequest.continue();
-            }
-        };
-        page.on('request', requestHandler);
+        console.log(`🌐 Landed URL: ${targetUrl}`);
 
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        // If landing on dotflix or link page, click any available verify/download button instantly
+        for (let i = 0; i < 4; i++) {
+            await new Promise(r => setTimeout(r, 2000));
 
-        // Loop through verification steps quickly
-        let finalLink = null;
-        for (let attempt = 1; attempt <= 6; attempt++) {
-            await new Promise(r => setTimeout(r, 2500));
+            // Check if Pixeldrain link is already in the DOM
+            const directPix = await page.evaluate(() => {
+                const pixEl = document.querySelector('a[href*="pixeldrain.com"]');
+                if (pixEl && pixEl.href) return pixEl.href;
 
-            finalLink = await page.evaluate(() => {
-                const pix = document.querySelector('a[href*="pixeldrain.com"]');
-                if (pix && pix.href) return pix.href;
-
-                const buttons = Array.from(document.querySelectorAll('a, button, div.btn, span.btn'));
-                const target = buttons.find(b => {
-                    const text = (b.innerText || '').toUpperCase();
-                    return text.includes('DOWNLOAD NOW') || text.includes('VERIFY LINK') || text.includes('CLICK HERE') || text.includes('PROCEED');
-                });
-
-                if (target) {
-                    const href = target.getAttribute('href');
-                    if (href && href.includes('pixeldrain.com')) return href;
-                    target.click();
-                }
-                return null;
+                // Search all anchors for pixeldrain or direct download
+                const anchors = Array.from(document.querySelectorAll('a'));
+                const found = anchors.find(a => a.href && (a.href.includes('pixeldrain.com') || a.href.includes('/api/file/')));
+                return found ? found.href : null;
             });
 
-            if (finalLink) break;
-            if (page.url().includes('pixeldrain.com')) {
-                finalLink = page.url();
-                break;
+            if (directPix) {
+                let clean = directPix.includes('/api/file/') ? directPix : directPix.replace('/u/', '/api/file/');
+                console.log(`✨ [SUCCESS] Found Direct Pixeldrain: ${clean}`);
+                return clean;
             }
+
+            // Click verification buttons
+            await page.evaluate(() => {
+                const btns = Array.from(document.querySelectorAll('a, button, div.btn, span.btn, input[type="submit"]'));
+                const btn = btns.find(b => {
+                    const txt = (b.innerText || b.value || '').toUpperCase();
+                    return txt.includes('DOWNLOAD') || txt.includes('VERIFY') || txt.includes('CLICK') || txt.includes('PROCEED') || txt.includes('NEXT');
+                });
+                if (btn) btn.click();
+            });
         }
 
-        // Remove request interception listener after done
-        page.off('request', requestHandler);
-        try { await page.setRequestInterception(false); } catch(e) {}
-
-        let resolved = finalLink || page.url();
-        if (resolved.includes('pixeldrain.com')) {
-            resolved = resolved.includes('/api/file/') ? resolved : resolved.replace('/u/', '/api/file ലേഖ');
+        // Final fallback check on current page HTML via Axios / Cheerio if puppeteer gets stuck
+        const finalPageUrl = page.url();
+        if (finalPageUrl.includes('pixeldrain.com')) {
+            return finalPageUrl.includes('/api/file/') ? finalPageUrl : finalPageUrl.replace('/u/', '/api/file/');
         }
 
-        console.log(`✨ [SUCCESS] Final Link: ${resolved}`);
-        return resolved;
+        // Try scraping the final page content
+        const pageContent = await page.content();
+        const $c = cheerio.load(pageContent);
+        const htmlPix = $c('a[href*="pixeldrain.com"]').attr('href');
+        if (htmlPix) {
+            return htmlPix.includes('/api/file/') ? htmlPix : htmlPix.replace('/u/', '/api/file/');
+        }
+
+        console.log(`⚠️ Could not resolve direct link, returning original: ${url}`);
+        return url;
 
     } catch (err) {
         console.error(`❌ [RESOLVER ERROR]: ${err.message}`);
@@ -224,7 +223,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             }
         });
 
-        console.log(`📦 Scraped ${downloads.length} raw links. Launching Chrome with AdBlocker...`);
+        console.log(`📦 Scraped ${downloads.length} raw links. Launching Chrome resolver...`);
 
         const chromePath = getChromeExecutablePath();
         browser = await puppeteer.launch({
