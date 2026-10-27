@@ -307,7 +307,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                 downloads: finalDownloads
             }
         });
-    } czyn (err) {
+    } catch (err) {
         console.error(`❌ [INFO DL ERROR]: ${err.message}`);
         res.status(500).json({ status: false, error: err.message });
     }
