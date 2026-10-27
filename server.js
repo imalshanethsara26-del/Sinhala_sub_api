@@ -15,7 +15,7 @@ const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 };
 
-// Auto Find Chrome Executable
+// Auto Find Chrome Executable on Render
 function getChromeExecutablePath() {
     const possiblePaths = [
         '/opt/render/project/src/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
@@ -40,48 +40,79 @@ function getChromeExecutablePath() {
     return undefined;
 }
 
-// Single Link Resolver using Page instance
+// Resolver with Built-in AdGuard / Request Blocker
 async function resolvePageLink(page, url) {
     try {
-        console.log(`\n🔍 [RESOLVER] Processing Link: ${url}`);
+        console.log(`\n🔍 [RESOLVER] Processing: ${url}`);
 
         if (url.includes('pixeldrain.com')) {
             return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
         }
 
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        // Enable AdGuard-style Request Interception
+        await page.setRequestInterception(true);
+        const requestHandler = interceptedRequest => {
+            const reqUrl = interceptedRequest.url().toLowerCase();
+            const resourceType = interceptedRequest.resourceType();
 
-        // Loop through verification steps (Verify Link 1, 2, 3)
-        for (let step = 1; step <= 3; step++) {
-            await new Promise(r => setTimeout(r, 3500));
+            // Block ads, popups, analytics, and heavy unnecessary resources (images, fonts)
+            const adDomains = ['googleads', 'googlesyndication', 'popads', 'adcash', 'histats', 'truepass', 'analytic', 'stat'];
+            const isAd = adDomains.some(domain => reqUrl.includes(domain));
 
-            await page.evaluate(() => {
-                const buttons = Array.from(document.querySelectorAll('a, button, div.btn'));
-                const targetBtn = buttons.find(b => {
+            if (isAd || resourceType === 'image' || resourceType === 'font') {
+                interceptedRequest.abort();
+            } else {
+                interceptedRequest.continue();
+            }
+        };
+        page.on('request', requestHandler);
+
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+        // Loop through verification steps quickly
+        let finalLink = null;
+        for (let attempt = 1; attempt <= 6; attempt++) {
+            await new Promise(r => setTimeout(r, 2500));
+
+            finalLink = await page.evaluate(() => {
+                const pix = document.querySelector('a[href*="pixeldrain.com"]');
+                if (pix && pix.href) return pix.href;
+
+                const buttons = Array.from(document.querySelectorAll('a, button, div.btn, span.btn'));
+                const target = buttons.find(b => {
                     const text = (b.innerText || '').toUpperCase();
-                    return text.includes('VERIFY LINK') || text.includes('DOWNLOAD NOW') || text.includes('CLICK HERE') || text.includes('PROCEED');
+                    return text.includes('DOWNLOAD NOW') || text.includes('VERIFY LINK') || text.includes('CLICK HERE') || text.includes('PROCEED');
                 });
-                if (targetBtn) targetBtn.click();
+
+                if (target) {
+                    const href = target.getAttribute('href');
+                    if (href && href.includes('pixeldrain.com')) return href;
+                    target.click();
+                }
+                return null;
             });
+
+            if (finalLink) break;
+            if (page.url().includes('pixeldrain.com')) {
+                finalLink = page.url();
+                break;
+            }
         }
 
-        await new Promise(r => setTimeout(r, 4000));
+        // Remove request interception listener after done
+        page.off('request', requestHandler);
+        try { await page.setRequestInterception(false); } catch(e) {}
 
-        const finalUrl = page.url();
-        const domPixeldrain = await page.evaluate(() => {
-            const a = document.querySelector('a[href*="pixeldrain.com"]');
-            return a ? a.href : null;
-        });
-
-        let resolved = domPixeldrain || finalUrl;
+        let resolved = finalLink || page.url();
         if (resolved.includes('pixeldrain.com')) {
-            resolved = resolved.includes('/api/file/') ? resolved : resolved.replace('/u/', '/api/file/');
+            resolved = resolved.includes('/api/file/') ? resolved : resolved.replace('/u/', '/api/file ലേഖ');
         }
 
-        console.log(`✨ [SUCCESS] Direct Link: ${resolved}`);
+        console.log(`✨ [SUCCESS] Final Link: ${resolved}`);
         return resolved;
+
     } catch (err) {
-        console.error(`❌ [ERROR] for (${url}): ${err.message}`);
+        console.error(`❌ [RESOLVER ERROR]: ${err.message}`);
         return url;
     }
 }
@@ -118,10 +149,7 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
             if (!title) title = $(el).attr('title') || '';
             if (!title) title = $(el).text().trim();
 
-            let img = $(el).find('img').attr('src');
-            if (!img) img = $(el).find('img').attr('data-src');
-            if (!img) img = parent.find('img').attr('src');
-            if (!img) img = parent.find('img').attr('data-src') || '';
+            let img = $(el).find('img').attr('src') || $(el).find('img').attr('data-src') || parent.find('img').attr('src') || '';
 
             if (href.includes('sinhalasub.lk') && (href.includes('/movies/') || href.includes('/tvshows/')) && title.length > 2) {
                 title = title.replace(/\t|\n/g, '').trim();
@@ -164,7 +192,6 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         if (!story) story = 'No description available';
 
         const downloads = [];
-
         const isIgnored = (url) => {
             if (!url || url.startsWith('#') || url.startsWith('javascript:')) return true;
             const ignoreList = ['facebook.com', 'twitter.com', 'whatsapp.com', 'youtube.com', 't.me/share', 'sinhalasub.lk/?s='];
@@ -197,9 +224,8 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             }
         });
 
-        console.log(`📦 Scraped ${downloads.length} raw links. Launching single Chrome instance for Queue processing...`);
+        console.log(`📦 Scraped ${downloads.length} raw links. Launching Chrome with AdBlocker...`);
 
-        // Launch SINGLE browser instance for all links to save RAM
         const chromePath = getChromeExecutablePath();
         browser = await puppeteer.launch({
             headless: true,
@@ -219,7 +245,6 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-        // PROCESS LINKS SEQUENTIALLY (ONE BY ONE)
         const finalDownloads = [];
         for (const item of downloads) {
             if (item.link.includes('/links/') || item.link.includes('dotflix')) {
