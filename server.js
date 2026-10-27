@@ -3,6 +3,8 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,7 +16,45 @@ const HEADERS = {
 };
 
 // ==========================================
-// 🛠️ ADVANCED PUPPETEER MULTI-STEP RESOLVER WITH LOGS
+// 🛠️ HELPER: FIND CHROME EXECUTABLE ON RENDER
+// ==========================================
+function getChromeExecutablePath() {
+    const possiblePaths = [
+        '/opt/render/project/src/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        process.env.PUPPETEER_EXECUTABLE_PATH
+    ];
+
+    for (const p of possiblePaths) {
+        if (p && fs.existsSync(p)) {
+            console.log(`📌 Found Chrome executable at: ${p}`);
+            return p;
+        }
+    }
+
+    // Try finding dynamically in cache directory if specific version path differs
+    const baseCache = '/opt/render/project/src/.cache/puppeteer/chrome';
+    if (fs.existsSync(baseCache)) {
+        try {
+            const dirs = fs.readdirSync(baseCache);
+            for (const dir of dirs) {
+                const autoPath = path.join(baseCache, dir, 'chrome-linux64', 'chrome');
+                if (fs.existsSync(autoPath)) {
+                    console.log(`📌 Dynamically found Chrome at: ${autoPath}`);
+                    return autoPath;
+                }
+            }
+        } catch (e) {
+            console.log(`⚠️ Auto-detect path error: ${e.message}`);
+        }
+    }
+
+    console.log(`⚠️ Chrome path not found in cache, using default puppeteer launcher.`);
+    return undefined;
+}
+
+// ==========================================
+// 🛠️ ADVANCED PUPPETEER MULTI-STEP RESOLVER
 // ==========================================
 async function resolveDotflixLink(url) {
     let browser = null;
@@ -29,8 +69,11 @@ async function resolveDotflixLink(url) {
             return cleanPix;
         }
 
+        const chromePath = getChromeExecutablePath();
+
         browser = await puppeteer.launch({
             headless: true,
+            executablePath: chromePath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -49,10 +92,10 @@ async function resolveDotflixLink(url) {
         console.log(`🌐 Navigating to redirect/verification page...`);
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-        // Loop to click through verification steps (Verify Link 1, 2, 3 / Download Now)
+        // Loop through verification steps (Verify Link 1, 2, 3 / Download Now)
         for (let step = 1; step <= 4; step++) {
-            console.log(`⏳ [STEP ${step}] Waiting for timer & looking for verification buttons...`);
-            await new Promise(r => setTimeout(r, 4000)); // Wait for timer countdown
+            console.log(`⏳ [STEP ${step}] Waiting for countdown timer & verification buttons...`);
+            await new Promise(r => setTimeout(r, 4000));
 
             const clicked = await page.evaluate(() => {
                 const buttons = Array.from(document.querySelectorAll('a, button, div.btn'));
@@ -68,20 +111,18 @@ async function resolveDotflixLink(url) {
             });
 
             if (clicked) {
-                console.log(`🖱️ [STEP ${step}] Successfully clicked verification/download button!`);
+                console.log(`🖱️ [STEP ${step}] Clicked verification/download button!`);
             } else {
-                console.log(`ℹ️ [STEP ${step}] No active verification button found, checking current state...`);
+                console.log(`ℹ️ [STEP ${step}] No active verification button, continuing state check...`);
             }
         }
 
-        // Final wait for redirect to complete
         console.log(`⏳ Waiting for final redirect to complete...`);
         await new Promise(r => setTimeout(r, 5000));
 
         const finalUrl = page.url();
         console.log(`🎯 Current Browser URL: ${finalUrl}`);
 
-        // Check if page contains a direct pixeldrain link in DOM
         const domPixeldrain = await page.evaluate(() => {
             const a = document.querySelector('a[href*="pixeldrain.com"]');
             return a ? a.href : null;
@@ -105,7 +146,7 @@ async function resolveDotflixLink(url) {
     }
 }
 
-// Root Status Route
+// Root Route
 app.get('/', (req, res) => {
     res.json({
         status: true,
@@ -277,16 +318,14 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
 
         console.log(`📦 Scraped ${downloads.length} raw download links. Resolving through Puppeteer bypass...`);
 
-        // ==========================================
-        // 🚀 RESOLVE LINKS USING PUPPETEER IN PARALLEL
-        // ==========================================
+        // Resolve links in parallel
         const finalDownloads = await Promise.all(
             downloads.map(async (item) => {
                 if (item.link.includes('/links/') || item.link.includes('dotflix')) {
                     const directUrl = await resolveDotflixLink(item.link);
                     return {
                         ...item,
-                        direct_link: directUrl, // Real resolved direct link!
+                        direct_link: directUrl,
                         original_link: item.link
                     };
                 }
