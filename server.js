@@ -14,14 +14,19 @@ const HEADERS = {
 };
 
 // ==========================================
-// 🛠️ PUPPETEER LINK RESOLVER (Bypasses Timers & Verification)
+// 🛠️ ADVANCED PUPPETEER MULTI-STEP RESOLVER WITH LOGS
 // ==========================================
 async function resolveDotflixLink(url) {
     let browser = null;
     try {
-        // Direct Pixeldrain link එකක් නම් කෙළින්ම රිටර්න් කරයි
+        console.log(`\n==============================================`);
+        console.log(`🔍 [RESOLVER START] Processing Link: ${url}`);
+        console.log(`==============================================`);
+
         if (url.includes('pixeldrain.com')) {
-            return url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
+            const cleanPix = url.includes('/api/file/') ? url : url.replace('/u/', '/api/file/');
+            console.log(`✅ Already a Pixeldrain link: ${cleanPix}`);
+            return cleanPix;
         }
 
         browser = await puppeteer.launch({
@@ -41,45 +46,61 @@ async function resolveDotflixLink(url) {
         const page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
         
-        console.log(`🌐 Resolving link via Puppeteer: ${url}`);
+        console.log(`🌐 Navigating to redirect/verification page...`);
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-        // Wait for timers / verification steps to complete (approx 6 seconds)
-        await new Promise(r => setTimeout(r, 6000));
+        // Loop to click through verification steps (Verify Link 1, 2, 3 / Download Now)
+        for (let step = 1; step <= 4; step++) {
+            console.log(`⏳ [STEP ${step}] Waiting for timer & looking for verification buttons...`);
+            await new Promise(r => setTimeout(r, 4000)); // Wait for timer countdown
 
-        // Try clicking any "Verify Link" or "Download Now" button if present
-        try {
-            await page.evaluate(() => {
-                const btns = Array.from(document.querySelectorAll('a, button'));
-                const target = btns.find(b => b.innerText.includes('VERIFY') || b.innerText.includes('DOWNLOAD NOW') || b.innerText.includes('Click Here'));
-                if (target) target.click();
+            const clicked = await page.evaluate(() => {
+                const buttons = Array.from(document.querySelectorAll('a, button, div.btn'));
+                const targetBtn = buttons.find(b => {
+                    const text = (b.innerText || '').toUpperCase();
+                    return text.includes('VERIFY LINK') || text.includes('DOWNLOAD NOW') || text.includes('CLICK HERE') || text.includes('PROCEED');
+                });
+                if (targetBtn) {
+                    targetBtn.click();
+                    return true;
+                }
+                return false;
             });
-            await new Promise(r => setTimeout(r, 4000));
-        } catch (e) {
-            // Ignore click errors if button not found immediately
+
+            if (clicked) {
+                console.log(`🖱️ [STEP ${step}] Successfully clicked verification/download button!`);
+            } else {
+                console.log(`ℹ️ [STEP ${step}] No active verification button found, checking current state...`);
+            }
         }
 
-        // Get final resolved URL or check page for Pixeldrain / Dotflix links
-        const finalUrl = await page.evaluate(() => {
-            const pixeldrainLink = document.querySelector('a[href*="pixeldrain.com"]');
-            if (pixeldrainLink) return pixeldrainLink.href;
+        // Final wait for redirect to complete
+        console.log(`⏳ Waiting for final redirect to complete...`);
+        await new Promise(r => setTimeout(r, 5000));
 
-            const dotflixLink = document.querySelector('a[href*="dotflix.store"]');
-            if (dotflixLink) return dotflixLink.href;
+        const finalUrl = page.url();
+        console.log(`🎯 Current Browser URL: ${finalUrl}`);
 
-            return window.location.href;
+        // Check if page contains a direct pixeldrain link in DOM
+        const domPixeldrain = await page.evaluate(() => {
+            const a = document.querySelector('a[href*="pixeldrain.com"]');
+            return a ? a.href : null;
         });
 
         await browser.close();
 
-        if (finalUrl.includes('pixeldrain.com')) {
-            return finalUrl.includes('/api/file/') ? finalUrl : finalUrl.replace('/u/', '/api/file/');
+        let resolved = domPixeldrain || finalUrl;
+        if (resolved.includes('pixeldrain.com')) {
+            resolved = resolved.includes('/api/file/') ? resolved : resolved.replace('/u/', '/api/file/');
         }
 
-        return finalUrl;
+        console.log(`✨ [RESOLVER SUCCESS] Final Direct Link: ${resolved}`);
+        console.log(`==============================================\n`);
+        return resolved;
+
     } catch (err) {
         if (browser) await browser.close();
-        console.error(`Error resolving link (${url}):`, err.message);
+        console.error(`❌ [RESOLVER ERROR] for (${url}): ${err.message}`);
         return url;
     }
 }
@@ -88,7 +109,8 @@ async function resolveDotflixLink(url) {
 app.get('/', (req, res) => {
     res.json({
         status: true,
-        message: "IMALSHA API is Live 🚀",
+        creator: "IMALSHA API",
+        site: "sinhalasub",
         endpoints: {
             search: "/api/v1/sinhalasub/search?q=movie_name",
             infodl: "/api/v1/sinhalasub/infodl?url=movie_url"
@@ -102,6 +124,7 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
         const query = req.query.q;
         if (!query) return res.status(400).json({ status: false, message: "Search term required" });
 
+        console.log(`\n🔍 [SEARCH] Query: "${query}"`);
         const searchUrl = "https://sinhalasub.lk/?s=" + encodeURIComponent(query);
         const response = await axios.get(searchUrl, { headers: HEADERS, timeout: 10000 });
         const $ = cheerio.load(response.data);
@@ -128,8 +151,10 @@ app.get('/api/v1/sinhalasub/search', async (req, res) => {
             }
         });
 
+        console.log(`🎯 Found ${results.length} search results.`);
         res.json({ status: true, creator: "IMALSHA API", site: "sinhalasub", results_count: results.length, data: results });
     } catch (err) {
+        console.error(`❌ [SEARCH ERROR]: ${err.message}`);
         res.status(500).json({ status: false, error: err.message });
     }
 });
@@ -140,6 +165,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
         const movieUrl = req.query.url;
         if (!movieUrl) return res.status(400).json({ status: false, message: "URL required" });
 
+        console.log(`\n🔥 [INFO DL] Processing Movie URL: ${movieUrl}`);
         const response = await axios.get(movieUrl, { headers: HEADERS, timeout: 10000 });
         const $ = cheerio.load(response.data);
 
@@ -249,6 +275,8 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
             });
         }
 
+        console.log(`📦 Scraped ${downloads.length} raw download links. Resolving through Puppeteer bypass...`);
+
         // ==========================================
         // 🚀 RESOLVE LINKS USING PUPPETEER IN PARALLEL
         // ==========================================
@@ -258,7 +286,7 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                     const directUrl = await resolveDotflixLink(item.link);
                     return {
                         ...item,
-                        direct_link: directUrl, // Automatically resolved direct link!
+                        direct_link: directUrl, // Real resolved direct link!
                         original_link: item.link
                     };
                 }
@@ -279,7 +307,8 @@ app.get('/api/v1/sinhalasub/infodl', async (req, res) => {
                 downloads: finalDownloads
             }
         });
-    } catch (err) {
+    } czyn (err) {
+        console.error(`❌ [INFO DL ERROR]: ${err.message}`);
         res.status(500).json({ status: false, error: err.message });
     }
 });
